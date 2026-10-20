@@ -1,0 +1,105 @@
+name: Build Inspect Items (Fabric)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inspectitems-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Find Gradle project (root or ZIP archive)
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$GITHUB_WORKSPACE"
+
+          is_project() {
+            local dir="$1"
+            [[ -f "$dir/build.gradle" || -f "$dir/build.gradle.kts" ]] &&
+            [[ -f "$dir/settings.gradle" || -f "$dir/settings.gradle.kts" ]] &&
+            [[ -d "$dir/src" ]]
+          }
+
+          if is_project "$workspace"; then
+            echo "project_dir=." >> "$GITHUB_OUTPUT"
+            echo "Found Gradle project at repository root."
+            exit 0
+          fi
+
+          extract_root="$workspace/.build-source"
+          rm -rf "$extract_root"
+          mkdir -p "$extract_root"
+          found_dir=""
+
+          while IFS= read -r -d '' archive; do
+            archive_name="$(basename "$archive" .zip)"
+            destination="$extract_root/$archive_name"
+            mkdir -p "$destination"
+            echo "Checking archive: $(basename "$archive")"
+
+            if ! unzip -q "$archive" -d "$destination"; then
+              echo "Skipping unreadable ZIP: $(basename "$archive")"
+              continue
+            fi
+
+            while IFS= read -r -d '' build_file; do
+              candidate_dir="$(dirname "$build_file")"
+              if is_project "$candidate_dir"; then
+                found_dir="$(realpath --relative-to="$workspace" "$candidate_dir")"
+                break 2
+              fi
+            done < <(find "$destination" -type f \( -name build.gradle -o -name build.gradle.kts \) -not -path '*/.gradle/*' -print0)
+          done < <(find "$workspace" -maxdepth 1 -type f -iname '*.zip' -print0 | sort -z)
+
+          if [[ -z "$found_dir" ]]; then
+            echo "ERROR: No Gradle Fabric project found." >&2
+            echo "The repository must contain build.gradle, settings.gradle, and src/, either directly or inside a source ZIP." >&2
+            echo "Files at repository root:" >&2
+            find "$workspace" -maxdepth 2 -type f -not -path '*/.git/*' -printf '%P\n' | sort >&2
+            exit 1
+          fi
+
+          echo "project_dir=$found_dir" >> "$GITHUB_OUTPUT"
+          echo "Found Gradle project in: $found_dir"
+
+      - name: Build mod
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f ./gradlew ]]; then
+            echo "ERROR: Gradle wrapper (gradlew) is missing from the project." >&2
+            exit 1
+          fi
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean build
+
+      - name: Upload built mod JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspectitems-fabric-1.21.11
+          path: |
+            ${{ steps.project.outputs.project_dir }}/build/libs/*.jar
+            !${{ steps.project.outputs.project_dir }}/build/libs/*-sources.jar
+          if-no-files-found: error
+          retention-days: 14
