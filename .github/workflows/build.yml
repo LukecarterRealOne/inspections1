@@ -19,11 +19,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 21
-        uses: actions/setup-java@v5
+      # Fabric Loom 1.18.x requires Java 25 to RUN Gradle.
+      # The mod remains compiled for Java 21 via options.release in build.gradle.
+      - name: Set up Java 25
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
+
+      - name: Show Java version
+        run: java --version
 
       - name: Find Gradle project (root or ZIP archive)
         id: project
@@ -72,7 +77,7 @@ jobs:
 
           if [[ -z "$found_dir" ]]; then
             echo "ERROR: No Gradle Fabric project found." >&2
-            echo "The repository must contain build.gradle, settings.gradle, and src/, either directly or inside a source ZIP." >&2
+            echo "Put the Gradle source at the repository root or include a ZIP containing build.gradle, settings.gradle, and src/." >&2
             echo "Files at repository root:" >&2
             find "$workspace" -maxdepth 2 -type f -not -path '*/.git/*' -printf '%P\n' | sort >&2
             exit 1
